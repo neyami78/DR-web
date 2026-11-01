@@ -1,0 +1,182 @@
+name: Deploy Dungeon Raid web ZIP
+run-name: Deploy verified web-test-1 ZIP
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: "web-test-1"
+  RELEASE_ASSET: "dungeon-raid-web.zip"
+  WEB_ZIP_SHA256: "00C70F3C48A9A740EF57B19DF333E92DB7F9FDB689DFFD3EF5CF569996DCB169"
+
+jobs:
+  prepare:
+    if: >-
+      (github.event_name == 'release' && github.event.release.tag_name == 'web-test-1') ||
+      (github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Refuse an unpinned ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$WEB_ZIP_SHA256" =~ ^[0-9A-Fa-f]{64}$ ]] || [[ "$WEB_ZIP_SHA256" =~ ^0+$ ]]; then
+            echo "::error::Final ZIP SHA256 must be pinned before publication."
+            exit 1
+          fi
+
+      - name: Checkout workflow repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download the fixed Release asset
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir download
+          gh release download "$RELEASE_TAG" --repo "$GH_REPO" --pattern "$RELEASE_ASSET" --dir download
+          test -f "download/$RELEASE_ASSET"
+
+      - name: Verify ZIP and extract the unchanged Godot site
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import shutil
+          import stat
+          import zipfile
+          
+          MAX_ZIP = 2 * 1024**3
+          MAX_SITE = 1_000_000_000
+          MAX_ENTRIES = 10000
+          
+          def verify_extract(zip_path, expected_sha256, output_path):
+              if not re.fullmatch(r"[0-9A-Fa-f]{64}", expected_sha256 or "") or set(expected_sha256) == {"0"}:
+                  raise ValueError("The final ZIP SHA256 has not been pinned")
+              archive_path = Path(zip_path)
+              if not archive_path.is_file() or archive_path.is_symlink():
+                  raise ValueError("Expected one regular Release ZIP")
+              if not 0 < archive_path.stat().st_size < MAX_ZIP:
+                  raise ValueError("Release ZIP must be nonempty and under 2 GiB")
+              digest = hashlib.sha256()
+              with archive_path.open("rb") as stream:
+                  for block in iter(lambda: stream.read(1024 * 1024), b""):
+                      digest.update(block)
+              actual = digest.hexdigest()
+              if actual.lower() != expected_sha256.lower():
+                  raise ValueError("Release ZIP SHA256 mismatch")
+              output = Path(output_path)
+              if output.exists() or output.is_symlink():
+                  raise ValueError("Extraction destination must be fresh")
+              with zipfile.ZipFile(archive_path) as archive:
+                  members = archive.infolist()
+                  if not 1 <= len(members) <= MAX_ENTRIES:
+                      raise ValueError("Unexpected ZIP entry count")
+                  total = 0
+                  seen = set()
+                  regular = set()
+                  checked = []
+                  for member in members:
+                      name = member.filename
+                      original = member.orig_filename
+                      if "\x00" in original or "\\" in original or "\\" in name or name.startswith("/"):
+                          raise ValueError("ZIP absolute, NUL, or backslash path")
+                      trimmed = name[:-1] if member.is_dir() else name
+                      parts = trimmed.split("/")
+                      if not trimmed or any(part in ("", ".", "..") or ":" in part for part in parts):
+                          raise ValueError("ZIP empty, drive, or traversal path")
+                      if any(ord(char) < 32 or ord(char) == 127 for char in name):
+                          raise ValueError("ZIP control character path")
+                      key = trimmed.casefold()
+                      if key in seen:
+                          raise ValueError("Duplicate or case-colliding ZIP path")
+                      seen.add(key)
+                      mode = (member.external_attr >> 16) & 0xFFFF
+                      file_type = stat.S_IFMT(mode)
+                      allowed_type = stat.S_IFDIR if member.is_dir() else stat.S_IFREG
+                      if file_type not in (0, allowed_type):
+                          raise ValueError("ZIP links and special files are not allowed")
+                      if member.flag_bits & 1:
+                          raise ValueError("Encrypted ZIP entries are not allowed")
+                      total += member.file_size
+                      if total > MAX_SITE:
+                          raise ValueError("Uncompressed site exceeds the 1 GB Pages limit")
+                      if not member.is_dir():
+                          regular.add(key)
+                      checked.append((member, parts))
+                  for member, parts in checked:
+                      for length in range(1, len(parts)):
+                          if "/".join(parts[:length]).casefold() in regular:
+                              raise ValueError("ZIP file/directory collision")
+                  if not any(member.filename == "index.html" and not member.is_dir() for member, parts in checked) or not any(name.endswith(".wasm") and "/" not in name for name in regular) or not any(name.endswith(".pck") and "/" not in name for name in regular):
+                      raise ValueError("ZIP root must contain index.html, a WASM and a PCK")
+                  # Extract ourselves: no path rewriting, symlinks, hardlinks or overwrites.
+                  # Standard Godot HTML/JS/WASM/PCK bytes and names remain unchanged.
+                  output.mkdir()
+                  written = 0
+                  for member, parts in checked:
+                      destination = output.joinpath(*parts)
+                      if member.is_dir():
+                          destination.mkdir(parents=True, exist_ok=True)
+                          continue
+                      destination.parent.mkdir(parents=True, exist_ok=True)
+                      with archive.open(member) as source, destination.open("xb") as target:
+                          for block in iter(lambda: source.read(1024 * 1024), b""):
+                              written += len(block)
+                              if written > MAX_SITE:
+                                  raise ValueError("Actual extraction exceeds the Pages limit")
+                              target.write(block)
+                  index = output / "index.html"
+                  if not index.is_file() or index.stat().st_size == 0:
+                      raise ValueError("Root index.html is empty or absent")
+              return {"passed": True, "zip_sha256": actual.upper(), "entry_count": len(members), "site_bytes": written,
+                      "index_sha256": hashlib.sha256(index.read_bytes()).hexdigest().upper(),
+                      "standard_loader_modified": False}
+          
+          if __name__ == "__main__":
+              report = verify_extract(Path("download") / os.environ["RELEASE_ASSET"], os.environ["WEB_ZIP_SHA256"], Path("_site"))
+              print(json.dumps(report, sort_keys=True))
+          PY
+
+      - name: Upload the verified Pages site
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: _site
+          retention-days: 1
+          include-hidden-files: true
+
+  deploy:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
