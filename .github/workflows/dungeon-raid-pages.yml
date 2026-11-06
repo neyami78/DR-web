@@ -1,5 +1,5 @@
-name: Deploy Dungeon Raid skill pool web ZIP
-run-name: Deploy verified web-test-5 ZIP
+name: Deploy Dungeon Raid web ZIP
+run-name: Deploy verified web-test-6 ZIP
 
 on:
   release:
@@ -14,14 +14,14 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  RELEASE_TAG: "web-test-5"
-  RELEASE_ASSET: "dungeon-raid-web-skill-pool.zip"
-  WEB_ZIP_SHA256: "05B72FCE3549E13915203681F7CB67C983394BB2EC5395D1D74C9A8C1495C0A4"
+  RELEASE_TAG: "web-test-6"
+  RELEASE_ASSET: "dungeon-raid-web-toggle-style.zip"
+  WEB_ZIP_SHA256: "C9B4CA8463CCD86E7FEE9FBCED2F2231A0527EF38ADA71EA729D9AE7A69DFF6F"
 
 jobs:
   prepare:
     if: >-
-      (github.event_name == 'release' && github.event.release.tag_name == 'web-test-5') ||
+      (github.event_name == 'release' && github.event.release.tag_name == 'web-test-6') ||
       (github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
     runs-on: ubuntu-24.04
     timeout-minutes: 15
