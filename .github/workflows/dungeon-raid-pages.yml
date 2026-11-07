@@ -1,5 +1,5 @@
 name: Deploy Dungeon Raid web ZIP
-run-name: Deploy verified web-test-7 ZIP
+run-name: Deploy verified web-test-8 ZIP
 
 on:
   release:
@@ -14,14 +14,14 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  RELEASE_TAG: "web-test-7"
-  RELEASE_ASSET: "dungeon-raid-web-reflect-preview.zip"
-  WEB_ZIP_SHA256: "0687369F6210A016A9D40C2E52BF18FFA75E4CDDF384DFB08750F9A360567B4E"
+  RELEASE_TAG: "web-test-8"
+  RELEASE_ASSET: "dungeon-raid-web-max-skills-shop-details.zip"
+  WEB_ZIP_SHA256: "7031B3EEB2087A308938C860A3F08ECE12F45D26C71F320F2E9DA3F38E54B4D5"
 
 jobs:
   prepare:
     if: >-
-      (github.event_name == 'release' && github.event.release.tag_name == 'web-test-7') ||
+      (github.event_name == 'release' && github.event.release.tag_name == 'web-test-8') ||
       (github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))
     runs-on: ubuntu-24.04
     timeout-minutes: 15
